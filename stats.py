@@ -22,6 +22,8 @@ REFERER_KEY = "$workers.event.request.headers.referer"
 DEFAULT_DATASET = "cloudflare-workers"
 CACHE_SERVED_STATUSES = ("hit", "stale", "updating")
 ORIGIN_STATUSES = ("miss", "expired", "bypass", "dynamic", "revalidated")
+DEFAULT_LIMIT = 1000
+DEFAULT_CACHE_QUERY_LIMIT = 1000
 AUTO_TIMEFRAMES = {
     "workers": ("7d", "3d", "24h", "12h"),
     "web_analytics": ("180d", "90d", "30d", "7d", "24h"),
@@ -137,8 +139,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--limit",
         type=int,
-        default=10,
-        help="Number of referers to display. Defaults to 10.",
+        default=DEFAULT_LIMIT,
+        help=f"Maximum rows to display/request. Defaults to {DEFAULT_LIMIT}.",
     )
     parser.add_argument(
         "--dataset",
@@ -219,7 +221,7 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help=(
             "Internal GraphQL row limit for cache calculations. Defaults to a "
-            "larger value based on --limit."
+            f"larger value based on --limit, with a floor of {DEFAULT_CACHE_QUERY_LIMIT}."
         ),
     )
     parser.add_argument(
@@ -1568,7 +1570,7 @@ def main() -> int:
                 "or run --list-zones-with-data to find a zone with HTTP analytics."
             )
         else:
-            query_limit = args.cache_query_limit or max(args.limit * 10, 100)
+            query_limit = args.cache_query_limit or max(args.limit, DEFAULT_CACHE_QUERY_LIMIT)
             try:
                 response, from_ms, to_ms, label = fetch_with_timeframe_fallback(
                     "cache",

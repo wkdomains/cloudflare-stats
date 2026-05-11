@@ -68,13 +68,16 @@ Pass the account ID explicitly:
 ./stats.py --account-id 0c4da32fb09ef63e0149bde16a8af33f
 ```
 
-Override the timeframe and number of rows:
+Override the timeframe and cap the number of rows:
 
 ```bash
 ./stats.py --timeframe 24h --limit 20
 ./stats.py --timeframe 30m --limit 5
 ./stats.py --timeframe 7d --limit 50
 ```
+
+By default, `--limit` is `1000`, so normal runs print all rows returned by
+Cloudflare up to that API page size.
 
 Supported timeframe suffixes are:
 
@@ -241,7 +244,7 @@ Filter cache analytics by host:
 ```
 
 `--cache-query-limit` controls the internal GraphQL row limit used to calculate
-ratios. It defaults to `max(--limit * 10, 100)`.
+ratios. It defaults to `max(--limit, 1000)`.
 
 ## Listing Web Analytics Sites
 
