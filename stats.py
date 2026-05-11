@@ -28,7 +28,10 @@ class RefererCount:
 
 
 class CloudflareAPIError(RuntimeError):
-    pass
+    def __init__(self, message: str, status: int | None = None, code: int | None = None):
+        super().__init__(message)
+        self.status = status
+        self.code = code
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,6 +69,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="List unique referer values instead of top referers by count.",
     )
+    parser.add_argument(
+        "--verify-token",
+        action="store_true",
+        help="Only verify CLOUDFLARE_API_TOKEN and print its status.",
+    )
     return parser.parse_args()
 
 
@@ -93,9 +101,45 @@ def parse_timeframe(value: str) -> tuple[int, int]:
     return from_ms, now_ms
 
 
-def post_json(account_id: str, token: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-    url = f"{API_BASE}/accounts/{account_id}{path}"
-    data = json.dumps(payload).encode("utf-8")
+def cloudflare_error_message(status: int | None, decoded: dict[str, Any] | None, body: str) -> str:
+    errors = decoded.get("errors") if decoded else None
+    messages = []
+    if isinstance(errors, list):
+        for item in errors:
+            if isinstance(item, dict):
+                code = item.get("code")
+                message = item.get("message", item)
+                messages.append(f"{code}: {message}" if code is not None else str(message))
+            else:
+                messages.append(str(item))
+
+    detail = "; ".join(messages) if messages else body
+    message = f"Cloudflare API returned HTTP {status}: {detail}" if status else detail
+
+    if status == 403 and decoded and any(
+        isinstance(item, dict) and item.get("code") == 10000 for item in errors or []
+    ):
+        message += (
+            "\n\n"
+            "Authentication reached Cloudflare but was rejected for this request. Check:\n"
+            "- CLOUDFLARE_API_TOKEN is the API token secret, not a token ID, dashboard cookie, or Global API Key.\n"
+            "- The token is active: ./stats.py --verify-token\n"
+            "- The token can access this account ID.\n"
+            "- The token has Account > Workers Observability > Write permission.\n"
+            "- Any token IP allowlist includes your current network."
+        )
+
+    return message
+
+
+def request_json(
+    token: str,
+    method: str,
+    path: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    url = f"{API_BASE}{path}"
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
     request = urllib.request.Request(
         url,
         data=data,
@@ -104,7 +148,7 @@ def post_json(account_id: str, token: str, path: str, payload: dict[str, Any]) -
             "Content-Type": "application/json",
             "Accept": "application/json",
         },
-        method="POST",
+        method=method,
     )
 
     try:
@@ -112,7 +156,20 @@ def post_json(account_id: str, token: str, path: str, payload: dict[str, Any]) -
             body = response.read().decode("utf-8")
     except urllib.error.HTTPError as error:
         body = error.read().decode("utf-8", errors="replace")
-        raise CloudflareAPIError(f"Cloudflare API returned HTTP {error.code}: {body}") from error
+        try:
+            decoded = json.loads(body) if body else None
+        except json.JSONDecodeError:
+            decoded = None
+        code = None
+        if isinstance(decoded, dict) and isinstance(decoded.get("errors"), list) and decoded["errors"]:
+            first_error = decoded["errors"][0]
+            if isinstance(first_error, dict) and isinstance(first_error.get("code"), int):
+                code = first_error["code"]
+        raise CloudflareAPIError(
+            cloudflare_error_message(error.code, decoded, body),
+            status=error.code,
+            code=code,
+        ) from error
     except urllib.error.URLError as error:
         raise CloudflareAPIError(f"Could not reach Cloudflare API: {error.reason}") from error
 
@@ -122,11 +179,17 @@ def post_json(account_id: str, token: str, path: str, payload: dict[str, Any]) -
         raise CloudflareAPIError(f"Cloudflare API returned invalid JSON: {body}") from error
 
     if not decoded.get("success", False):
-        errors = decoded.get("errors") or []
-        messages = ", ".join(str(item.get("message", item)) for item in errors)
-        raise CloudflareAPIError(messages or "Cloudflare API request failed")
+        raise CloudflareAPIError(cloudflare_error_message(None, decoded, body))
 
     return decoded
+
+
+def post_json(account_id: str, token: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return request_json(token, "POST", f"/accounts/{account_id}{path}", payload)
+
+
+def verify_token(token: str) -> dict[str, Any]:
+    return request_json(token, "GET", "/user/tokens/verify")
 
 
 def fetch_top_referers(
@@ -330,6 +393,15 @@ def main() -> int:
     if not token:
         print("Missing CLOUDFLARE_API_TOKEN environment variable.", file=sys.stderr)
         return 2
+
+    if args.verify_token:
+        try:
+            response = verify_token(token)
+        except CloudflareAPIError as error:
+            print(error, file=sys.stderr)
+            return 1
+        print(json.dumps(response, indent=2, sort_keys=True))
+        return 0
 
     if not args.account_id:
         print(
