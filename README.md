@@ -45,7 +45,7 @@ does not have an IP allowlist blocking your current network.
 
 ## Usage
 
-Run both data sources for the last 12 hours:
+Run both default data sources:
 
 ```bash
 ./stats.py
@@ -54,13 +54,21 @@ Run both data sources for the last 12 hours:
 By default, `both` means Workers Observability plus Web Analytics. Cache
 analytics is opt-in because it requires a zone ID.
 
+If `--timeframe` is not passed, each source starts at "now" and uses the
+largest built-in one-request lookback window for that source, falling back
+smaller only if Cloudflare rejects the range:
+
+- Workers Observability: tries `7d`, then `3d`, `24h`, `12h`
+- Web Analytics: tries `180d`, then `90d`, `30d`, `7d`, `24h`
+- Cache / HTTP Analytics: tries `30d`, then `7d`, `72h`, `24h`
+
 Pass the account ID explicitly:
 
 ```bash
 ./stats.py --account-id 0c4da32fb09ef63e0149bde16a8af33f
 ```
 
-Change the timeframe and number of rows:
+Override the timeframe and number of rows:
 
 ```bash
 ./stats.py --timeframe 24h --limit 20

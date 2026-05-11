@@ -22,6 +22,18 @@ REFERER_KEY = "$workers.event.request.headers.referer"
 DEFAULT_DATASET = "cloudflare-workers"
 CACHE_SERVED_STATUSES = ("hit", "stale", "updating")
 ORIGIN_STATUSES = ("miss", "expired", "bypass", "dynamic", "revalidated")
+AUTO_TIMEFRAMES = {
+    "workers": ("7d", "3d", "24h", "12h"),
+    "web_analytics": ("180d", "90d", "30d", "7d", "24h"),
+    "cache": ("30d", "7d", "72h", "24h"),
+}
+NON_TIMEFRAME_ERROR_HINTS = (
+    "authentication",
+    "does not have permission",
+    "does not have access to the field",
+    "invalid request headers",
+    "unknown field",
+)
 
 
 @dataclass(frozen=True)
@@ -117,8 +129,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--timeframe",
-        default="12h",
-        help="Relative time window such as 30m, 12h, 7d. Defaults to 12h.",
+        help=(
+            "Relative time window such as 30m, 12h, 7d. "
+            "Defaults to an automatic source-specific maximum."
+        ),
     )
     parser.add_argument(
         "--limit",
@@ -248,6 +262,35 @@ def parse_timeframe(value: str) -> tuple[int, int]:
     now_ms = int(time.time() * 1000)
     from_ms = now_ms - amount * multipliers[unit] * 1000
     return from_ms, now_ms
+
+
+def source_timeframe_labels(source: str, override: str | None) -> tuple[str, ...]:
+    if override:
+        return (override,)
+    return AUTO_TIMEFRAMES[source]
+
+
+def fetch_with_timeframe_fallback(
+    source: str,
+    override: str | None,
+    fetcher: Any,
+) -> tuple[dict[str, Any], int, int, str]:
+    errors: list[str] = []
+
+    for label in source_timeframe_labels(source, override):
+        from_ms, to_ms = parse_timeframe(label)
+        try:
+            return fetcher(from_ms, to_ms), from_ms, to_ms, label
+        except CloudflareAPIError as error:
+            message = str(error).lower()
+            if override or any(hint in message for hint in NON_TIMEFRAME_ERROR_HINTS):
+                raise
+            errors.append(f"{label}: {error}")
+
+    raise CloudflareAPIError(
+        f"{source.replace('_', ' ')} failed for every automatic timeframe. "
+        + " | ".join(errors)
+    )
 
 
 def cloudflare_error_message(status: int | None, decoded: dict[str, Any] | None, body: str) -> str:
@@ -1413,13 +1456,13 @@ def main() -> int:
             print_sites(response)
         return 0
 
-    try:
-        from_ms, to_ms = parse_timeframe(args.timeframe)
-    except ValueError as error:
-        print(error, file=sys.stderr)
-        return 1
-
     if args.list_zones_with_data:
+        scan_timeframe = args.timeframe or AUTO_TIMEFRAMES["cache"][0]
+        try:
+            from_ms, to_ms = parse_timeframe(scan_timeframe)
+        except ValueError as error:
+            print(error, file=sys.stderr)
+            return 1
         try:
             rows, scan_errors = scan_zones_with_data(
                 args.account_id,
@@ -1458,6 +1501,7 @@ def main() -> int:
 
     responses: dict[str, Any] = {}
     errors: dict[str, str] = {}
+    timeframes: dict[str, tuple[int, int, str]] = {}
 
     wants_workers = args.source in {"workers", "both", "all"}
     wants_web_analytics = args.source in {"web-analytics", "both", "all"} and not args.values
@@ -1466,39 +1510,55 @@ def main() -> int:
     if wants_workers:
         try:
             if args.values:
-                responses["workers"] = fetch_referer_values(
-                    args.account_id,
-                    token,
-                    from_ms,
-                    to_ms,
-                    args.dataset,
-                    args.limit,
+                response, from_ms, to_ms, label = fetch_with_timeframe_fallback(
+                    "workers",
+                    args.timeframe,
+                    lambda start, end: fetch_referer_values(
+                        args.account_id,
+                        token,
+                        start,
+                        end,
+                        args.dataset,
+                        args.limit,
+                    ),
                 )
             else:
-                responses["workers"] = fetch_top_referers(
-                    args.account_id,
-                    token,
-                    from_ms,
-                    to_ms,
-                    args.dataset,
-                    args.limit,
+                response, from_ms, to_ms, label = fetch_with_timeframe_fallback(
+                    "workers",
+                    args.timeframe,
+                    lambda start, end: fetch_top_referers(
+                        args.account_id,
+                        token,
+                        start,
+                        end,
+                        args.dataset,
+                        args.limit,
+                    ),
                 )
-        except CloudflareAPIError as error:
+            responses["workers"] = response
+            timeframes["workers"] = (from_ms, to_ms, label)
+        except (ValueError, CloudflareAPIError) as error:
             errors["workers"] = str(error)
 
     if wants_web_analytics:
         try:
-            responses["web_analytics"] = fetch_web_analytics_referers(
-                args.account_id,
-                token,
-                from_ms,
-                to_ms,
-                site_tags_from_args(args),
-                args.host,
-                args.include_bots,
-                args.limit,
+            response, from_ms, to_ms, label = fetch_with_timeframe_fallback(
+                "web_analytics",
+                args.timeframe,
+                lambda start, end: fetch_web_analytics_referers(
+                    args.account_id,
+                    token,
+                    start,
+                    end,
+                    site_tags_from_args(args),
+                    args.host,
+                    args.include_bots,
+                    args.limit,
+                ),
             )
-        except CloudflareAPIError as error:
+            responses["web_analytics"] = response
+            timeframes["web_analytics"] = (from_ms, to_ms, label)
+        except (ValueError, CloudflareAPIError) as error:
             errors["web_analytics"] = str(error)
 
     if wants_cache:
@@ -1510,24 +1570,44 @@ def main() -> int:
         else:
             query_limit = args.cache_query_limit or max(args.limit * 10, 100)
             try:
-                responses["cache"] = fetch_cache_paths(
-                    args.zone_id,
-                    token,
-                    from_ms,
-                    to_ms,
-                    args.host,
-                    args.limit,
-                    query_limit,
-                    [status.lower() for status in args.cache_status],
+                response, from_ms, to_ms, label = fetch_with_timeframe_fallback(
+                    "cache",
+                    args.timeframe,
+                    lambda start, end: fetch_cache_paths(
+                        args.zone_id,
+                        token,
+                        start,
+                        end,
+                        args.host,
+                        args.limit,
+                        query_limit,
+                        [status.lower() for status in args.cache_status],
+                    ),
                 )
-            except CloudflareAPIError as error:
+                responses["cache"] = response
+                timeframes["cache"] = (from_ms, to_ms, label)
+            except (ValueError, CloudflareAPIError) as error:
                 errors["cache"] = str(error)
 
     if args.json:
-        print(json.dumps({"responses": responses, "errors": errors}, indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                {
+                    "responses": responses,
+                    "errors": errors,
+                    "timeframes": {
+                        source: {"from": values[0], "to": values[1], "label": values[2]}
+                        for source, values in timeframes.items()
+                    },
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
     else:
         printed = False
         if "workers" in responses:
+            from_ms, to_ms, _label = timeframes["workers"]
             if args.values:
                 print_values(extract_values(responses["workers"]), from_ms, to_ms)
             else:
@@ -1542,6 +1622,7 @@ def main() -> int:
         if "web_analytics" in responses:
             if printed:
                 print()
+            from_ms, to_ms, _label = timeframes["web_analytics"]
             print_web_analytics_table(
                 extract_web_analytics_referers(responses["web_analytics"]),
                 from_ms,
@@ -1552,6 +1633,7 @@ def main() -> int:
         if "cache" in responses:
             if printed:
                 print()
+            from_ms, to_ms, _label = timeframes["cache"]
             if args.cache_mode == "statuses":
                 print_cache_status_table(
                     extract_cache_statuses(responses["cache"]),
