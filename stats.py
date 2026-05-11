@@ -55,6 +55,13 @@ class ZoneTraffic:
 
 
 @dataclass(frozen=True)
+class ZoneScanError:
+    zone_id: str
+    name: str
+    message: str
+
+
+@dataclass(frozen=True)
 class CachePathStats:
     host: str
     path: str
@@ -1327,20 +1334,22 @@ def scan_zones_with_data(
     from_ms: int,
     to_ms: int,
     scan_limit: int,
-) -> list[ZoneTraffic]:
+) -> tuple[list[ZoneTraffic], list[ZoneScanError]]:
     zones = list_zones(account_id, token)
     rows: list[ZoneTraffic] = []
+    errors: list[ZoneScanError] = []
     for zone in zones[:scan_limit]:
         if not zone.zone_id:
             continue
         try:
             response = fetch_zone_traffic(zone.zone_id, token, from_ms, to_ms)
-        except CloudflareAPIError:
+        except CloudflareAPIError as error:
+            errors.append(ZoneScanError(zone_id=zone.zone_id, name=zone.name, message=str(error)))
             continue
         rows.append(extract_zone_traffic(response, zone))
 
     rows.sort(key=lambda row: row.requests, reverse=True)
-    return rows
+    return rows, errors
 
 
 def main() -> int:
@@ -1414,7 +1423,7 @@ def main() -> int:
 
     if args.list_zones_with_data:
         try:
-            rows = scan_zones_with_data(
+            rows, scan_errors = scan_zones_with_data(
                 args.account_id,
                 token,
                 from_ms,
@@ -1426,9 +1435,27 @@ def main() -> int:
             return 1
         rows = rows[: args.limit]
         if args.json:
-            print(json.dumps([row.__dict__ for row in rows], indent=2, sort_keys=True))
+            print(
+                json.dumps(
+                    {
+                        "zones": [row.__dict__ for row in rows],
+                        "errors": [error.__dict__ for error in scan_errors],
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
         else:
             print_zones_with_data(rows, from_ms, to_ms)
+            if scan_errors:
+                print(
+                    f"\nSkipped {len(scan_errors)} zone analytics request(s). "
+                    "Most common causes are missing Account > Account Analytics > Read "
+                    "or token zone-resource access.",
+                    file=sys.stderr,
+                )
+                for error in scan_errors[:5]:
+                    print(f"- {error.name} ({error.zone_id}): {error.message}", file=sys.stderr)
         return 0
 
     responses: dict[str, Any] = {}
