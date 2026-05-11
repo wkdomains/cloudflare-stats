@@ -277,7 +277,7 @@ def cloudflare_error_message(status: int | None, decoded: dict[str, Any] | None,
             "- The token can access this account ID.\n"
             "- The token has Account > Workers Observability > Write permission.\n"
             "- For Web Analytics GraphQL, the token has Account > Account Analytics > Read permission.\n"
-            "- For cache analytics, the token has Account > Account Analytics > Read permission and access to the zone.\n"
+            "- For cache analytics, the token has Zone > Analytics > Read permission and access to the zone.\n"
             "- For zone listing, the token can read zones on this account.\n"
             "- For --list-sites, the token can read Web Analytics/RUM site info for this account.\n"
             "- Any token IP allowlist includes your current network."
@@ -389,7 +389,9 @@ def graphql_json(token: str, payload: dict[str, Any]) -> dict[str, Any]:
         raise CloudflareAPIError(
             "Cloudflare GraphQL API returned errors: "
             + "; ".join(messages)
-            + "\n\nCheck that the token has Account > Account Analytics > Read permission."
+            + "\n\nCheck that the token has the analytics permission for this dataset. "
+            "Web Analytics uses Account > Account Analytics > Read; "
+            "zone HTTP/cache analytics uses Zone > Analytics > Read."
         )
 
     return decoded
@@ -1450,7 +1452,7 @@ def main() -> int:
             if scan_errors:
                 print(
                     f"\nSkipped {len(scan_errors)} zone analytics request(s). "
-                    "Most common causes are missing Account > Account Analytics > Read "
+                    "Most common causes are missing Zone > Analytics > Read "
                     "or token zone-resource access.",
                     file=sys.stderr,
                 )

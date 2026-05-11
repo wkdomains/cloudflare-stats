@@ -33,8 +33,8 @@ Token permissions depend on which source you use:
 
 - Workers Observability: `Account > Workers Observability > Write`
 - Web Analytics GraphQL: `Account > Account Analytics > Read`
-- Cache / HTTP Analytics GraphQL: `Account > Account Analytics > Read` and
-  zone-resource access to the target zone
+- Cache / HTTP Analytics GraphQL: `Zone > Analytics > Read` and zone-resource
+  access to the target zone
 - Listing zones: `Zone > Zone > Read`
 - Listing Web Analytics sites: token access to read Web Analytics/RUM site info
   for the account
