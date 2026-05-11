@@ -90,7 +90,6 @@ class CacheStatusStats:
     status: str
     count: int | float
     bytes_sent: int | float
-    content_type: str
     response_status: int | float | None
 
     @property
@@ -707,7 +706,6 @@ query CachePaths(
           cacheStatus
           clientRequestHTTPHost
           clientRequestPath
-          edgeResponseContentTypeName
           edgeResponseStatus
         }}
       }}
@@ -990,7 +988,6 @@ def extract_cache_statuses(response: dict[str, Any]) -> list[CacheStatusStats]:
                 status=str(dimensions.get("cacheStatus", "")),
                 count=count_from_row(row),
                 bytes_sent=bytes_from_row(row),
-                content_type=str(dimensions.get("edgeResponseContentTypeName", "")),
                 response_status=response_status
                 if isinstance(response_status, (int, float)) and not isinstance(response_status, bool)
                 else None,
@@ -1255,13 +1252,13 @@ def print_cache_status_table(
         f"{'#'.rjust(rank_width)}  "
         f"{'count'.rjust(count_width)}  "
         f"{'bytes'.rjust(bytes_width)}  "
-        "cache_status  http  content_type  url"
+        "cache_status  http  url"
     )
     print(
         f"{'-' * rank_width}  "
         f"{'-' * count_width}  "
         f"{'-' * bytes_width}  "
-        f"{'-' * 12}  {'-' * 4}  {'-' * 12}  {'-' * 40}"
+        f"{'-' * 12}  {'-' * 4}  {'-' * 40}"
     )
     for index, (row, count, byte_count) in enumerate(zip(rows, counts, bytes_sent), start=1):
         http_status = "" if row.response_status is None else format_number(row.response_status)
@@ -1271,7 +1268,6 @@ def print_cache_status_table(
             f"{byte_count.rjust(bytes_width)}  "
             f"{row.status[:12].ljust(12)}  "
             f"{http_status[:4].ljust(4)}  "
-            f"{row.content_type[:12].ljust(12)}  "
             f"{row.url}"
         )
 
