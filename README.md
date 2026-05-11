@@ -1,13 +1,16 @@
 # cloudflare-stats
 
-Small CLI for pulling referer stats from Cloudflare.
+Small CLI for pulling referer, Web Analytics, and cache stats from Cloudflare.
 
-`stats.py` currently supports two Cloudflare data sources:
+`stats.py` currently supports three Cloudflare data sources:
 
 - **Workers Observability**: request-log style Workers telemetry, including the raw
   `$workers.event.request.headers.referer` field.
 - **Web Analytics**: RUM/Web Analytics GraphQL data, grouped by referer host/path
   with pageviews and visits.
+- **Cache / HTTP Analytics**: zone-level GraphQL HTTP analytics for cache hit
+  ratio, fully cache-served URLs, origin-pressure URLs, and cache status
+  breakdowns.
 
 The script uses only Python standard-library modules.
 
@@ -17,16 +20,22 @@ The script uses only Python standard-library modules.
 - `CLOUDFLARE_API_TOKEN`
 - A Cloudflare account ID, passed with `--account-id` or set as
   `CLOUDFLARE_ACCOUNT_ID`
+- A Cloudflare zone ID for cache analytics, passed with `--zone-id` or set as
+  `CLOUDFLARE_ZONE_ID`
 
 ```bash
 export CLOUDFLARE_API_TOKEN=...
 export CLOUDFLARE_ACCOUNT_ID=...
+export CLOUDFLARE_ZONE_ID=...
 ```
 
 Token permissions depend on which source you use:
 
 - Workers Observability: `Account > Workers Observability > Write`
 - Web Analytics GraphQL: `Account > Account Analytics > Read`
+- Cache / HTTP Analytics GraphQL: `Account > Account Analytics > Read` and
+  access to the target zone
+- Listing zones: token access to read zones on the account
 - Listing Web Analytics sites: token access to read Web Analytics/RUM site info
   for the account
 
@@ -41,6 +50,9 @@ Run both data sources for the last 12 hours:
 ```bash
 ./stats.py
 ```
+
+By default, `both` means Workers Observability plus Web Analytics. Cache
+analytics is opt-in because it requires a zone ID.
 
 Pass the account ID explicitly:
 
@@ -149,6 +161,80 @@ Include bot traffic with:
 ./stats.py --source web-analytics --include-bots
 ```
 
+### Cache / HTTP Analytics
+
+Cache analytics uses Cloudflare's GraphQL Analytics API at the zone level:
+
+```text
+POST /client/v4/graphql
+```
+
+The query reads `httpRequestsAdaptiveGroups` and can show:
+
+- cache hit ratio by URL
+- URLs served entirely from cache within the returned top-path window
+- origin-pressure URLs, such as repeated `MISS`, `BYPASS`, `EXPIRED`,
+  `DYNAMIC`, or `REVALIDATED`
+- cache status breakdowns by URL
+
+Find zones with recent HTTP data:
+
+```bash
+./stats.py --list-zones-with-data --timeframe 24h --limit 20
+```
+
+List zones without checking traffic:
+
+```bash
+./stats.py --list-zones
+```
+
+Run cache hit-ratio stats:
+
+```bash
+./stats.py --source cache --zone-id ZONE_ID
+```
+
+Show URLs that were fully cache-served in the returned top-path window:
+
+```bash
+./stats.py --source cache --zone-id ZONE_ID --cache-mode fully-cached
+```
+
+Show top cache-served URLs:
+
+```bash
+./stats.py --source cache --zone-id ZONE_ID --cache-mode cached
+```
+
+Show top origin-pressure URLs:
+
+```bash
+./stats.py --source cache --zone-id ZONE_ID --cache-mode origin
+```
+
+Show cache statuses by URL:
+
+```bash
+./stats.py --source cache --zone-id ZONE_ID --cache-mode statuses
+```
+
+Filter cache statuses:
+
+```bash
+./stats.py --source cache --zone-id ZONE_ID --cache-mode statuses --cache-status miss
+./stats.py --source cache --zone-id ZONE_ID --cache-mode statuses --cache-status hit --cache-status stale
+```
+
+Filter cache analytics by host:
+
+```bash
+./stats.py --source cache --zone-id ZONE_ID --host example.com
+```
+
+`--cache-query-limit` controls the internal GraphQL row limit used to calculate
+ratios. It defaults to `max(--limit * 10, 100)`.
+
 ## Listing Web Analytics Sites
 
 Use this to find available Web Analytics `site_tag` values:
@@ -207,6 +293,16 @@ Web Analytics referers from 2026-05-11 00:00:00 UTC to 2026-05-11 12:00:00 UTC
 1        123      87  google.com/search
 ```
 
+Cache output is zone-level HTTP analytics by host/path:
+
+```text
+Cache hit ratio by URL from 2026-05-11 00:00:00 UTC to 2026-05-11 12:00:00 UTC
+
+#  total  cached  origin  cache%   bytes  url
+-  -----  ------  ------  ------  ------  ----------------------------------------
+1    500     500       0  100.0%  2.4 MB  example.com/assets/app.js
+```
+
 ## Notes
 
 Workers Observability and Web Analytics are not identical data sets.
@@ -218,7 +314,14 @@ Workers Observability and Web Analytics are not identical data sets.
 - Web Analytics referers are grouped dimensions, not the full raw Workers
   `$workers.event.request.headers.referer` value.
 - Web Analytics query strings are not available for attribution.
+- Cache analytics is zone-level HTTP analytics, not Workers telemetry or RUM.
+- Cache analytics uses sampled/adaptive GraphQL analytics. For exact per-request
+  cache history, use Cloudflare logs/Logpush.
+- `fully-cached` means the URL's returned top-path total was accounted for by
+  cache-served statuses in the query window. Increase `--cache-query-limit` for
+  broader coverage on busy zones.
 
-When `--source both` is used, each source is queried independently. If one
-source fails because of missing scope or unavailable data, the script still
-prints the other source when available and reports the failed source on stderr.
+When multiple sources are used, each source is queried independently. If one
+source fails because of missing scope, missing zone ID, or unavailable data, the
+script still prints other source results when available and reports the failed
+source on stderr.
